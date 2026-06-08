@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import MonthlyChart, { type ChartPoint } from "@/app/components/MonthlyChart";
+import SiteHeader from "@/app/components/SiteHeader";
 import { absMoney0, categoryLabel, money0, monthShort } from "@/lib/format";
 
 type Summary = { income: number; expenses: number; net: number };
@@ -101,13 +102,13 @@ export default function OverviewPage() {
   }, [start, end]);
 
   useEffect(() => {
-    if (selected === ALL) {
-      setSeries(null);
-      return;
-    }
     let cancelled = false;
-    setSeriesLoading(true);
     (async () => {
+      if (selected === ALL) {
+        if (!cancelled) setSeries(null);
+        return;
+      }
+      setSeriesLoading(true);
       try {
         const data = await fetchJson<SeriesRow[]>(
           `/api/category-series?category=${encodeURIComponent(selected)}&start=${start}&end=${end}`,
@@ -163,30 +164,7 @@ export default function OverviewPage() {
 
   return (
     <div className="min-h-full bg-background">
-      <header className="sticky top-0 z-10 border-b border-line bg-background/85 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <span className="font-display text-lg font-medium tracking-tight text-ink">
-            Family Finance
-          </span>
-          <nav className="flex items-center gap-1 text-sm">
-            <span className="rounded-md bg-surface-2 px-3 py-1.5 font-medium text-ink">
-              Overview
-            </span>
-            <a
-              href="/transactions"
-              className="rounded-md px-3 py-1.5 text-muted transition-colors hover:text-ink"
-            >
-              Transactions
-            </a>
-            <a
-              href="/subscriptions"
-              className="rounded-md px-3 py-1.5 text-muted transition-colors hover:text-ink"
-            >
-              Subscriptions
-            </a>
-          </nav>
-        </div>
-      </header>
+      <SiteHeader active="overview" />
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="mb-6">

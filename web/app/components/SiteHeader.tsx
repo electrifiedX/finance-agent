@@ -1,0 +1,45 @@
+import Link from "next/link";
+
+type Tab = "overview" | "transactions" | "subscriptions";
+
+const LINKS: { href: string; label: string; key: Tab }[] = [
+  { href: "/", label: "Overview", key: "overview" },
+  { href: "/transactions", label: "Transactions", key: "transactions" },
+  { href: "/subscriptions", label: "Subscriptions", key: "subscriptions" },
+];
+
+export default function SiteHeader({ active }: { active: Tab }) {
+  return (
+    <header className="sticky top-0 z-20 border-b border-line bg-background/85 backdrop-blur-sm">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <Link
+          href="/"
+          className="font-display text-lg font-medium tracking-tight text-ink"
+        >
+          Family Finance
+        </Link>
+        <nav className="flex items-center gap-1 text-sm">
+          {LINKS.map((l) =>
+            l.key === active ? (
+              <span
+                key={l.key}
+                aria-current="page"
+                className="rounded-md bg-surface-2 px-3 py-1.5 font-medium text-ink"
+              >
+                {l.label}
+              </span>
+            ) : (
+              <Link
+                key={l.key}
+                href={l.href}
+                className="rounded-md px-3 py-1.5 text-muted transition-colors hover:text-ink"
+              >
+                {l.label}
+              </Link>
+            ),
+          )}
+        </nav>
+      </div>
+    </header>
+  );
+}

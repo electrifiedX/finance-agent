@@ -38,6 +38,17 @@ export function monthShort(isoDate: string): string {
   return MONTH_FMT.format(new Date(`${isoDate}T00:00:00Z`));
 }
 
+const DAY_FMT = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+/** "2026-03-03" -> "Mar 3". Used for transaction-row dates. */
+export function dayShort(isoDate: string): string {
+  return DAY_FMT.format(new Date(`${isoDate}T00:00:00Z`));
+}
+
 /** First and last day (YYYY-MM-DD) of the month containing isoDate. */
 export function monthBounds(isoDate: string): { start: string; end: string } {
   const d = new Date(`${isoDate}T00:00:00Z`);

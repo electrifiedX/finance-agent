@@ -43,52 +43,138 @@ class NormalizedTxn:
 
 # ---------------------------------------------------------------------------
 # Merchant fingerprinting — collapse messy strings to a stable clustering key.
+# Tuned against the real merchant list (store numbers, city tails, Tran: junk,
+# &amp; encoding, transaction-hash suffixes, and brand variants).
 # ---------------------------------------------------------------------------
 _PREFIXES = ["SQ *", "SQ*", "TST*", "TST *", "TM *", "TM*", "SP ", "SP*", "PL*",
-             "PY *", "PAYPAL *", "PP*", "CKE*", "IN *"]
-_STATE_TAIL = re.compile(r"\s+[A-Z]{2}\s*$")          # trailing " CO", " TX", " WA"
-_PHONE = re.compile(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b")  # phone numbers
-_CARDNUM = re.compile(r"X{4,}\d*", re.IGNORECASE)      # masked card numbers XXXX...4559
-_ALLY_TAIL = re.compile(r"~.*?~")                       # Ally "~ Future Amount: 600 ~"
-_LONG_DIGITS = re.compile(r"\b\d{5,}\b")               # long ref/store digit runs
+             "PY *", "PAYPAL *", "PP*", "CKE*", "IN *", "TIL RZ ", "ZTL ", "LS ",
+             "CLIP MX "]
 _MULTISPACE = re.compile(r"\s+")
 
-# Known brand folds — applied after generic cleanup so variants collapse to one merchant.
+# Brand folds — checked FIRST (before generic mangling). First match wins, so order by
+# specificity. A fold returns the canonical merchant name immediately.
 _BRAND_FOLDS = [
-    (re.compile(r"\bAMAZON\b.*"), "AMAZON"),
-    (re.compile(r"\bAMZN\b.*"), "AMAZON"),
-    (re.compile(r"\bSTARBUCKS\b.*"), "STARBUCKS"),
-    (re.compile(r"\bTARGET\b.*"), "TARGET"),
-    (re.compile(r"\bWAL-?MART\b.*"), "WALMART"),
-    (re.compile(r"\bCOSTCO\b.*"), "COSTCO"),
-    (re.compile(r"\bSOUTHWES\w*\b.*"), "SOUTHWEST"),
-    (re.compile(r"\bUNITED\b\s*\d.*"), "UNITED"),
-    (re.compile(r"\bNETFLIX\b.*"), "NETFLIX"),
-    (re.compile(r"\bSPOTIFY\b.*"), "SPOTIFY"),
-    (re.compile(r"\bWHOLEFDS\b.*|\bWHOLE FOODS\b.*"), "WHOLE FOODS"),
-    (re.compile(r"\bKING SOOPERS\b.*"), "KING SOOPERS"),
-    (re.compile(r"\bCHEWY\b.*"), "CHEWY"),
-    (re.compile(r"\bROCKET ?MORT\w*\b.*|\bROCKET MORTGAGE\b.*"), "ROCKET MORTGAGE"),
+    (r"AMAZON|AMZN", "Amazon"),
+    (r"STARBUCKS", "Starbucks"),
+    (r"^TARGET\b|^TARGET\d|^TARGET ", "Target"),
+    (r"WAL-?MART|WM SUPERCENTER|WALMART", "Walmart"),
+    (r"COSTCO", "Costco"),
+    (r"^SOUTHWES", "Southwest Airlines"),
+    (r"^UNITED\b(?!.*POWER)", "United Airlines"),
+    (r"NETFLIX", "Netflix"),
+    (r"SPOTIFY", "Spotify"),
+    (r"WHOLE ?FOODS|WHOLEFDS", "Whole Foods"),
+    (r"KING SOOPERS", "King Soopers"),
+    (r"CHEWY", "Chewy"),
+    (r"ROCKET ?MORT", "Rocket Mortgage"),
+    (r"^CHIPOTLE", "Chipotle"),
+    (r"^CHICK-FIL-A|CHICKFILA", "Chick-fil-A"),
+    (r"^AMC\b", "AMC Theatres"),
+    (r"BLACK ROCK COFFEE", "Black Rock Coffee"),
+    (r"^AIRBNB", "Airbnb"),
+    (r"BUC-EE", "Buc-ee's"),
+    (r"ROYAL CARIBBEAN|RCCL|QUANTUM OF THE SEAS", "Royal Caribbean"),
+    (r"PRIME VIDEO", "Prime Video"),
+    (r"KINDLE", "Kindle"),
+    (r"CHIP COOKIES", "Chip Cookies"),
+    (r"COLORADO WOK", "Colorado Wok"),
+    (r"PHO CAFE", "Pho Cafe"),
+    (r"SPROUTS FARMERS", "Sprouts"),
+    (r"NATURAL GROCERS", "Natural Grocers"),
+    (r"SAFEWAY", "Safeway"),
+    (r"TEXAS ROADHOUSE", "Texas Roadhouse"),
+    (r"FLOOR AND DECOR", "Floor and Decor"),
+    (r"^WENDY", "Wendy's"),
+    (r"SWEETS ICE CREAM", "Sweets Ice Cream"),
+    (r"ZIGGI", "Ziggi's Coffee"),
+    (r"FIRST CUP", "First Cup"),
+    (r"TESLA SUPERCHARGER|^SUPERCHARGER", "Tesla Supercharger"),
+    (r"TESLA_US_CAPTIVE|TESLA INC ENERGY|TESLA ENERGY", "Tesla Energy"),
+    (r"TESLA MOTORS|TESLA SERVICE", "Tesla"),
+    (r"YOUTUBEPREMIUM", "YouTube Premium"),
+    (r"GOOGLE GOOGLE ONE|^GOOGLE ONE", "Google One"),
+    (r"GOOGLE GOOGLE STORE", "Google Store"),
+    (r"GOOGLE GOOGLE NEST", "Google Nest"),
+    (r"STARLINK", "Starlink"),
+    (r"COUNTYLINE WINE", "Countyline Wine & Spirits"),
+    (r"CATERPILLAR", "Caterpillar"),
+    (r"CHASE CREDIT CRD EPAY", "Chase Card Payment"),
+    (r"POPPINS PAYROLL", "Poppins Payroll"),
+    (r"XCEL ENERGY", "Xcel Energy"),
+    (r"NSM DBAMR|MR COOPER", "Mr Cooper"),
+    (r"FLOYD'S 99", "Floyd's 99"),
+    (r"COAL CREEK CAR WASH", "Coal Creek Car Wash"),
+    (r"SHANE ?CO", "Shane Co"),
+    (r"STUMO", "Stumo"),
+    (r"HULOOSLEEP", "Huloosleep"),
+    (r"REACHCHURCH", "Reach Church"),
+    (r"WALGREENS", "Walgreens"),
+    (r"LIVING SPACES", "Living Spaces"),
+    (r"DEN PUBLIC PARKING", "DEN Public Parking"),
+    (r"NEIGHBORHOODN", "Neighborhood HOA"),
+    (r"FLATIRONS COMMUNITY", "Flatirons Community"),
+    (r"VAGARO", "Vagaro"),
+    (r"TERRY BLACKS", "Terry Black's BBQ"),
+    (r"LA MADELEINE", "La Madeleine"),
+    (r"EXXON", "Exxon"),
+    (r"MAVERIK", "Maverik"),
+    (r"^THE 1UP", "The 1up"),
+    (r"STEVES CARPET CARE", "Steves Carpet Care"),
+    (r"BANGKOK AVENUE", "Bangkok Avenue"),
+    (r"TOOT.?N TOTUM", "Toot n Totum"),
+    (r"UNITED POWER", "United Power"),
+    (r"YOUNGEXPLORERSCO", "Young Explorers"),
+    (r"^ME-\w+-(MICROS|IC)|MAIN EVENT", "Main Event"),   # Main Event venues (odd "Me-city-micros/ic" descriptor)
+    (r"^CHECK\s*PAID", "Check Paid"),              # all checks -> one merchant, categorized together
+    (r"FIGURE LENDING", "Figure Lending"),
+    (r"GREENSKY", "GreenSky"),
+    (r"VETSOURCE", "VetSource"),
+    (r"KODA COLORADO", "Koda Colorado"),
+    (r"NOBULL", "NoBull"),
+    (r"PARAMOUNT ACCEPT VASAFIT|VASAFIT", "Vasa Fitness"),
+    (r"TOE UTILITIES", "Town of Erie Utilities"),
+    (r"TMOBILE", "T-Mobile"),
+    (r"COMCAST|XFINITY", "Comcast Xfinity"),
 ]
+
+_STATE_RE = re.compile(
+    r"\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|"
+    r"MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY),?\s*(US)?\.?\s*$"
+)
+_CITIES = ["LAFAYETTE", "THORNTON", "BROOMFIELD", "LONGMONT", "LOUISVILLE", "WESTMINSTER",
+           "BOULDER", "ERIE", "DENVER", "AUSTIN", "ROSENBERG", "KATY", "LAKEWOOD", "BRIGHTON",
+           "CENTENNIAL", "MONUMENT", "STAFFORD", "CHILDRESS", "KEARNEY", "NORFOLK", "BASTROP",
+           "MIRAMAR", "CONSHOHOCKEN"]
+_CITY_RE = re.compile(r"\b(" + "|".join(_CITIES) + r")\b")
 
 
 def fingerprint(raw: str) -> str:
     """Normalize a raw merchant/payee string to a stable clustering key (uppercase)."""
     s = (raw or "").upper().strip()
-    s = _ALLY_TAIL.sub(" ", s)
+    s = s.replace("&AMP;", "&")
+    s = re.sub(r"~.*?~", " ", s)                  # Ally "~ Future Amount: 600 ~"
+    s = re.sub(r"\bTRAN:\s*\w+", " ", s)          # Ally "Tran: Achdw / Ddir"
+    s = re.sub(r"\\R?MR\b.*", " ", s)             # Tesla giant tail
     s = s.replace("NULL", " ")
     for p in _PREFIXES:
         if s.startswith(p.upper()):
             s = s[len(p):]
-    s = _CARDNUM.sub(" ", s)
-    s = _PHONE.sub(" ", s)
-    s = _LONG_DIGITS.sub(" ", s)
-    s = _STATE_TAIL.sub("", s)
+    # Brand folds first — return canonical name immediately on match.
+    for pat, fold in _BRAND_FOLDS:
+        if re.search(pat, s):
+            return fold.upper()
+    # Generic cleanup for everything else.
+    s = re.sub(r"X{4,}\d*", " ", s)               # masked card numbers
+    s = re.sub(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", " ", s)  # phone numbers
+    s = _STATE_RE.sub("", s)                       # trailing state
+    s = re.sub(r"\b\d{5,}\b", " ", s)             # long digit runs
+    s = re.sub(r"\b\d{3,4}\b", " ", s)            # store numbers (0013, 1667)
+    s = _CITY_RE.sub(" ", s)                       # known city tails
+    s = re.sub(r"\b\d{3}-?\s*$", "", s)           # trailing "194-" "130-"
     s = re.sub(r"[*#]", " ", s)
+    s = re.sub(r",\s*$", "", s)
     s = _MULTISPACE.sub(" ", s).strip()
-    for pattern, fold in _BRAND_FOLDS:
-        if pattern.search(s):
-            return fold
+    s = re.sub(r"\s*-\s*$", "", s).strip()        # trailing dash
     return s or (raw or "").upper().strip()
 
 
