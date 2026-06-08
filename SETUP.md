@@ -92,7 +92,9 @@ a time; let each finish and verify before the next.
 ```
 Read docs/BRIEF.md sections 1, 3, and 11 for context.
 
-Create a Next.js 14 app (App Router, TypeScript) in a /web directory at the repo root.
+Create a Next.js app (use the LATEST stable version — Next.js 16, App Router, TypeScript) in a
+/web directory at the repo root. Note Next.js 15+ uses ASYNC Request APIs (cookies, headers,
+params, searchParams must be awaited) and updated caching defaults — write code accordingly.
 Use Tailwind. Add a Postgres client (the `pg` package) that reads DATABASE_URL from the
 environment. Create a db helper at web/lib/db.ts that exports a query function using a
 connection pool. Do not build any pages yet beyond a placeholder home page that confirms it
@@ -116,6 +118,17 @@ Create Next.js API routes under web/app/api/ for:
 - /api/subscriptions          -> query 7
 - /api/transactions?start=&end=&category=&account= -> the period transaction list
 Each route uses web/lib/db.ts. Return JSON. Keep the SQL faithful to db/queries.sql.
+
+IMPORTANT — single-app architecture (prevents the remote-access bug):
+- The frontend MUST call API routes with RELATIVE paths only: fetch('/api/summary'), NEVER
+  fetch('http://localhost:3000/api/summary') and never any hardcoded host or port. Relative paths
+  resolve to whatever domain served the page, so the app works identically on localhost AND through
+  the Cloudflare tunnel from a phone. A hardcoded "localhost" in any frontend fetch is THE bug that
+  breaks remote access (the browser's "localhost" is the phone, not the Mac Mini).
+- Postgres is only ever accessed server-side via web/lib/db.ts (same machine). The browser never
+  talks to the database directly. So DATABASE_URL using localhost is correct and never leaves the Mini.
+- This is ONE Next.js app (pages + API routes together), not a separate frontend and backend. That's
+  deliberate: only one service to expose, no cross-service routing.
 ```
 Verify: hit each route in the browser, confirm JSON comes back.
 
@@ -192,6 +205,17 @@ all pages: Overview · Transactions · Subscriptions, plus the persistent "+ Add
   track processed messages in the processed_emails table (NOT Gmail read/unread), write into
   Postgres via importers/common.py, and categorize through llm/categorize.py — do NOT
   re-implement categorization in the email script.
+
+### Remote access (Cloudflare tunnel) — keep it to ONE service
+When you want to reach the dashboard from your phone:
+- Run the Next.js app in production mode on the Mini: `cd web && npm run build && npm start`
+  (serves on port 3000). For always-on, wrap this in a launchd service like Postgres.
+- Point the Cloudflare tunnel at `http://localhost:3000` ONLY. One service, one hostname
+  (e.g. finance.yourdomain.com). Because the frontend uses relative API paths, everything —
+  pages and /api routes — flows through that single tunnel with no extra routing.
+- Do NOT tunnel Postgres (5432). The database stays private on the Mini; only the Next.js
+  server touches it. This is the whole reason the single-app design avoids the multi-service
+  tunnel headaches from before.
 
 ---
 
