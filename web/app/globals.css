@@ -1,26 +1,68 @@
 @import "tailwindcss";
 
+/*
+  Dark, calm, high-contrast palette. Saturated green/red are reserved strictly
+  for money direction (net positive / negative, income / spending). A single
+  warm "sand" accent is used sparingly for interactive + the average line.
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0b0e13;
+  --surface: #141a22;
+  --surface-2: #1b222c;
+  --line: #28313d;
+  --line-strong: #3a4654;
+
+  --ink: #eef2f7; /* primary text — real contrast, not low-opacity gray */
+  --ink-soft: #c2cdda; /* secondary text */
+  --muted: #8a96a6; /* labels / de-emphasized, still legible */
+
+  --pos: #46d398; /* money in / saved */
+  --pos-soft: #1f3b33;
+  --neg: #ff6f6f; /* money out / overspent */
+  --neg-soft: #3d2026;
+  --accent: #d8a85f; /* sand — interactive + average line, used sparingly */
 }
 
 @theme inline {
   --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+
+  --color-pos: var(--pos);
+  --color-pos-soft: var(--pos-soft);
+  --color-neg: var(--neg);
+  --color-neg-soft: var(--neg-soft);
+  --color-accent: var(--accent);
+
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-display), Georgia, serif;
+  --font-mono: var(--font-mono), ui-monospace, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--background);
+  color-scheme: dark;
 }
 
 body {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Money: monospace + tabular numerals so dollar columns align and don't jitter. */
+.money {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
 }
