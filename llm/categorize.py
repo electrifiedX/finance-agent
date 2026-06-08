@@ -28,7 +28,7 @@ SPENDING_CATEGORIES = [
     "pets", "travel", "giving", "gifts", "personal_andy", "personal_tina",
     "shopping", "interest", "fees", "needs_review", "uncategorized",
 ]
-NONSPENDING_CATEGORIES = ["transfer", "income", "misc_income", "refund", "business_expense"]
+NONSPENDING_CATEGORIES = ["transfer", "income", "misc_income", "refund", "business_expense", "cash_withdrawal"]
 ALL_CATEGORIES = SPENDING_CATEGORIES + NONSPENDING_CATEGORIES
 
 
@@ -97,8 +97,37 @@ Respond with ONLY a JSON object, no prose:
         return "needs_review", 0.0
 
 
+def seed_known_defaults(conn):
+    """
+    Lock defaults for mixed/known merchants so they skip the LLM and stay consistent.
+    These are the big stores that sell across categories (default to the dominant line;
+    split exceptions in the dashboard) plus a few stable household merchants. Matched by
+    the merchant display_name set by the importer's fingerprint.
+    """
+    defaults = [
+        ("Amazon%",          "shopping"),
+        ("Target%",          "groceries"),
+        ("Walmart%",         "groceries"),
+        ("Wm Supercenter%",  "groceries"),
+        ("Costco%",          "kid_expenses"),
+        ("Neighborhoodn%",   "housing"),      # HOA
+        ("Holistic Tree%",   "housing"),      # landscaping/property
+        ("Google Google Store%", "insurance"),   # Pixel device insurance
+        ("Angel%",           "home_entertainment"),
+    ]
+    with conn.cursor() as cur:
+        for pattern, cat in defaults:
+            cur.execute(
+                "UPDATE merchants SET default_category=%s, locked=true, updated_at=now() "
+                "WHERE display_name ILIKE %s AND locked=false",
+                (cat, pattern),
+            )
+    conn.commit()
+
+
 def run(dsn: str):
     conn = psycopg.connect(dsn)
+    seed_known_defaults(conn)   # lock known merchant defaults before categorizing
     with conn.cursor() as cur:
         # Transactions needing a category: NULL or 'uncategorized', not already corrected.
         cur.execute(

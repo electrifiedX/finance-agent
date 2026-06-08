@@ -29,14 +29,26 @@ _RULES = [
     ("INTERNET TRANSFER",          "transfer", "transfer", False),
     ("REQUESTED TRANSFER FROM ALLY INVEST", "transfer", "transfer", False),
     ("JPMORGAN CHASE EXT TRNSFR",  "transfer", "transfer", False),
-    # --- Housing ---
+    # --- Housing (mortgage + home-secured debt all roll into housing) ---
     ("ROCKET MORTGAGE LOAN",       "sale", "housing", True),
+    ("NSM DBAMR.COOPER",           "sale", "housing", True),   # Mr. Cooper — mortgage, new servicer
+    ("MR COOPER",                  "sale", "housing", True),
+    ("FIGURE LENDING",             "sale", "housing", True),   # HELOC (becoming Aven)
+    ("AVEN",                       "sale", "housing", True),   # HELOC successor
+    ("GREENSKY",                   "sale", "housing", True),   # HVAC loan (financed home improvement)
+    # --- Cash withdrawals: money to wallet, NOT consumption. Real spend logged manually. ---
+    ("U.S. BANK TM",               "transfer", "cash_withdrawal", False),  # ATM
+    ("US BANK ERIE",               "transfer", "cash_withdrawal", False),  # ATM
+    ("BANK OF AMERICA *BRAZOS",    "transfer", "cash_withdrawal", False),  # ATM
+    # --- Automotive ---
+    ("COGOV COMOTORVEH",           "sale", "automotive", True),   # CO vehicle registration
     # --- Income ---
     ("CATERPILLAR INC. DIR DEP",   "income", "income", False),
     ("INTEREST PAID",              "income", "income", False),
     ("ATM FEE REIMBURSEMENT",      "income", "income", False),
     # --- Utilities ---
     ("XCEL ENERGY",                "sale", "utilities", True),
+    ("UNITED POWER",               "sale", "utilities", True),   # electric co-op
     ("TOE UTILITIES",              "sale", "utilities", True),
     ("TESLA_US_CAPTIVE",           "sale", "utilities", True),   # solar/Powerwall energy lease
     ("ENERGY_LEASE",               "sale", "utilities", True),
@@ -58,7 +70,6 @@ _RULES = [
 _REVIEW_PATTERNS = [
     re.compile(r"CHECK\s*PAID"),          # bare checks, no description
     re.compile(r"VENMO PAYMENT"),         # outgoing venmo, ambiguous
-    re.compile(r"BANK OF AMERICA \*"),    # looks like ATM/cash
 ]
 
 
