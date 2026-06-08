@@ -60,11 +60,11 @@ def _fewshot_examples(conn, limit: int = 20) -> list[tuple[str, str]]:
         return cur.fetchall()
 
 
-def categorize_merchant(conn, display_name: str, merchant_raw: str, amount: float) -> tuple[str, float]:
-    """Ask the LLM for {category, confidence} for a new merchant, few-shot from history."""
+def categorize_merchant(conn, display_name: str, merchant_raw: str, amount: float) -> tuple[str, str, float]:
+    """Ask the LLM for {display_name, category, confidence} for a new merchant, few-shot from history."""
     examples = _fewshot_examples(conn)
     ex_text = "\n".join(f"  {n} -> {c}" for n, c in examples) or "  (none yet)"
-    prompt = f"""You categorize a household's financial transactions into EXACTLY ONE category.
+    prompt = f"""You clean up and categorize a household's financial transactions.
 
 Valid categories:
 {", ".join(ALL_CATEGORIES)}
@@ -79,22 +79,29 @@ Notes:
 - kid_expenses = goods for kids (diapers, kids' clothes/toys); childcare = paid care services.
 - If genuinely unclear, use "needs_review".
 
-Transaction: merchant="{display_name}" (raw: "{merchant_raw}"), amount={amount}
+Two tasks for this transaction:
+1. display_name: the clean, recognizable BUSINESS name. Strip store numbers, city names, and
+   payment-processor junk, BUT KEEP numbers that are part of the real brand (e.g. "7-Eleven",
+   "5 Guys", "Dave & Buster's"). Use the well-known name of the business if you recognize it.
+2. category: exactly one from the list above.
+
+Transaction: raw="{merchant_raw}", amount={amount}
 
 Respond with ONLY a JSON object, no prose:
-{{"category": "<one valid category>", "confidence": <0.0-1.0>}}"""
+{{"display_name": "<clean business name>", "category": "<one valid category>", "confidence": <0.0-1.0>}}"""
 
     raw = call_llm(prompt).strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
     try:
         data = json.loads(raw)
         cat = data["category"]
+        name = (data.get("display_name") or display_name).strip()
         conf = float(data.get("confidence", 0.5))
         if cat not in ALL_CATEGORIES:
-            return "needs_review", 0.0
-        return cat, conf
+            return name, "needs_review", 0.0
+        return name, cat, conf
     except Exception:
-        return "needs_review", 0.0
+        return display_name, "needs_review", 0.0
 
 
 def seed_known_defaults(conn):
@@ -114,6 +121,9 @@ def seed_known_defaults(conn):
         ("Holistic Tree%",   "housing"),      # landscaping/property
         ("Google Google Store%", "insurance"),   # Pixel device insurance
         ("Angel%",           "home_entertainment"),
+        ("Home Depot%",      "housing"),    # home improvement
+        ("Lowe's%",          "housing"),    # home improvement (store, not the card payment)
+        ("Floor and Decor%", "housing"),    # flooring/home improvement
     ]
     with conn.cursor() as cur:
         for pattern, cat in defaults:
@@ -151,14 +161,14 @@ def run(dsn: str):
             category, confidence = default_cat, 1.0
             n_cache += 1
         else:
-            category, confidence = categorize_merchant(conn, display_name, merchant_raw, float(amount))
+            new_name, category, confidence = categorize_merchant(conn, display_name, merchant_raw, float(amount))
             n_llm += 1
-            # Seed the merchant default (UNLOCKED — only a human lock makes it permanent).
+            # Seed the merchant default + clean display name (UNLOCKED — only a human lock makes it permanent).
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE merchants SET default_category = COALESCE(default_category, %s), "
-                    "updated_at = now() WHERE id = %s AND locked = false",
-                    (category, merchant_id),
+                    "display_name = %s, updated_at = now() WHERE id = %s AND locked = false",
+                    (category, new_name, merchant_id),
                 )
         with conn.cursor() as cur:
             cur.execute(

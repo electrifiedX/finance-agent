@@ -1,6 +1,15 @@
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, withTransaction } from "@/lib/db";
 import { getDateRange, jsonError, num } from "@/lib/api";
+import { deriveIsSpending, fingerprint } from "@/lib/taxonomy";
+import {
+  applyMerchantDefault,
+  replaceSplits,
+  saveSplitTemplate,
+  validateSplits,
+  type SplitInput,
+} from "@/lib/txnWrite";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +28,7 @@ type Row = {
   account: string;
   category: string | null;
   txn_type: string;
+  is_spending: boolean;
 };
 
 export async function GET(request: Request) {
@@ -58,7 +68,8 @@ export async function GET(request: Request) {
              t.amount,
              a.name AS account,
              t.category,
-             t.txn_type
+             t.txn_type,
+             t.is_spending
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
       LEFT JOIN merchants m ON m.id = t.merchant_id
@@ -77,8 +88,136 @@ export async function GET(request: Request) {
         account: r.account,
         category: r.category,
         txn_type: r.txn_type,
+        is_spending: r.is_spending,
       })),
     );
+  } catch (err) {
+    return jsonError(err);
+  }
+}
+
+type PostBody = {
+  occurred_at?: string;
+  amount?: number;
+  account_id?: number;
+  category?: string | null;
+  txn_type?: string;
+  notes?: string | null;
+  merchant_id?: number | null;
+  // When no existing merchant is picked, the typed name creates one on the fly.
+  merchant_name?: string;
+  apply_to_merchant?: boolean;
+  splits?: SplitInput[] | null;
+  save_split_template?: boolean;
+};
+
+// POST — manual single-transaction entry (also the modal's "+ Add expense" form).
+// source='manual', dedupe_key from a UUID so it never collides with an import.
+// For manual rows the typed clean name doubles as merchant_raw (there's no bank
+// string), and a brand-new vendor name is upserted into merchants first.
+export async function POST(request: Request) {
+  try {
+    const body = (await request.json().catch(() => ({}))) as PostBody;
+
+    const occurredAt = (body.occurred_at || "").trim();
+    if (!occurredAt) {
+      return NextResponse.json(
+        { error: "occurred_at is required" },
+        { status: 400 },
+      );
+    }
+    if (typeof body.amount !== "number" || Number.isNaN(body.amount)) {
+      return NextResponse.json(
+        { error: "amount is required" },
+        { status: 400 },
+      );
+    }
+    if (typeof body.account_id !== "number") {
+      return NextResponse.json(
+        { error: "account_id is required" },
+        { status: 400 },
+      );
+    }
+
+    const merchantName = (body.merchant_name || "").trim();
+    if (body.merchant_id == null && !merchantName) {
+      return NextResponse.json(
+        { error: "A merchant is required" },
+        { status: 400 },
+      );
+    }
+
+    const splits = body.splits ?? null;
+    if (splits && splits.length > 0) {
+      const err = validateSplits(splits);
+      if (err) return NextResponse.json({ error: err }, { status: 400 });
+    }
+
+    const category = body.category ?? null;
+    const txnType = body.txn_type || "sale";
+    const isSpending = deriveIsSpending(category, txnType);
+
+    const newId = await withTransaction(async (client) => {
+      // Resolve the merchant: an explicit pick wins, otherwise upsert the typed
+      // name by fingerprint so duplicates collapse.
+      let merchantId = body.merchant_id ?? null;
+      let merchantRaw = merchantName;
+      if (!merchantId && merchantName) {
+        const fp = fingerprint(merchantName);
+        const { rows } = await client.query<{ id: number }>(
+          `INSERT INTO merchants (raw_fingerprint, display_name)
+           VALUES ($1, $2)
+           ON CONFLICT (raw_fingerprint)
+             DO UPDATE SET updated_at = now()
+           RETURNING id`,
+          [fp, merchantName],
+        );
+        merchantId = rows[0].id;
+      }
+      if (merchantId && !merchantRaw) {
+        const { rows } = await client.query<{ display_name: string }>(
+          `SELECT display_name FROM merchants WHERE id = $1`,
+          [merchantId],
+        );
+        merchantRaw = rows[0]?.display_name ?? "Manual entry";
+      }
+
+      const { rows: inserted } = await client.query<{ id: number }>(
+        `INSERT INTO transactions
+           (account_id, occurred_at, amount, merchant_id, merchant_raw, category,
+            txn_type, is_spending, source, dedupe_key, user_corrected, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', $9, true, $10)
+         RETURNING id`,
+        [
+          body.account_id,
+          occurredAt,
+          body.amount,
+          merchantId,
+          merchantRaw || "Manual entry",
+          category,
+          txnType,
+          isSpending,
+          `manual:${randomUUID()}`,
+          body.notes ?? null,
+        ],
+      );
+      const id = inserted[0].id;
+
+      if (splits && splits.length > 0) {
+        await replaceSplits(client, id, splits);
+      }
+      if (merchantId) {
+        if (body.apply_to_merchant && category) {
+          await applyMerchantDefault(client, merchantId, id, category);
+        }
+        if (body.save_split_template && splits && splits.length > 0) {
+          await saveSplitTemplate(client, merchantId, splits);
+        }
+      }
+      return id;
+    });
+
+    return NextResponse.json({ ok: true, id: newId }, { status: 201 });
   } catch (err) {
     return jsonError(err);
   }

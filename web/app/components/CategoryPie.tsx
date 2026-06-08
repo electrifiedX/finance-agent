@@ -1,9 +1,11 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { categoryLabel, money0 } from "@/lib/format";
+import { money0 } from "@/lib/format";
 
-export type CategorySlice = { category: string; spend: number };
+// Pre-labeled, pre-aggregated items (name + value). The caller decides what the
+// slices mean — categories when unfiltered, vendors when drilled into a category.
+export type PieItem = { name: string; value: number };
 
 // Decorative, distinguishable hues for the slices. Deliberately NOT the pos/neg
 // green/red tokens (those are reserved for money direction), led by the sand accent.
@@ -46,16 +48,20 @@ function PieTooltip({
 }
 
 export default function CategoryPie({
-  categories,
+  items,
+  emptyLabel = "No spending in this period.",
 }: {
-  categories: CategorySlice[];
+  items: PieItem[];
+  emptyLabel?: string;
 }) {
-  const positive = categories.filter((c) => c.spend > 0);
+  const positive = items
+    .filter((c) => c.value > 0)
+    .sort((a, b) => b.value - a.value);
 
   if (positive.length === 0) {
     return (
       <div className="flex h-52 items-center justify-center text-sm text-muted">
-        No spending in this period.
+        {emptyLabel}
       </div>
     );
   }
@@ -63,11 +69,11 @@ export default function CategoryPie({
   const top = positive.slice(0, TOP);
   const otherTotal = positive
     .slice(TOP)
-    .reduce((sum, c) => sum + c.spend, 0);
+    .reduce((sum, c) => sum + c.value, 0);
 
   const data: Slice[] = top.map((c) => ({
-    name: categoryLabel(c.category),
-    value: c.spend,
+    name: c.name,
+    value: c.value,
   }));
   if (otherTotal > 0) data.push({ name: "Other", value: otherTotal });
 

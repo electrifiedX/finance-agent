@@ -84,6 +84,8 @@ _BRAND_FOLDS = [
     (r"SAFEWAY", "Safeway"),
     (r"TEXAS ROADHOUSE", "Texas Roadhouse"),
     (r"FLOOR AND DECOR", "Floor and Decor"),
+    (r"THE HOME DEPOT|HOME DEPOT|HOMEDEPOT", "Home Depot"),
+    (r"(LOWE'?S|^LOWES)(?!.*SYF)(?!.*PAYMNT)", "Lowe's"),  # store only; NOT "Lowes Syf Paymnt" (that's a CC payment/transfer)
     (r"^WENDY", "Wendy's"),
     (r"SWEETS ICE CREAM", "Sweets Ice Cream"),
     (r"ZIGGI", "Ziggi's Coffee"),
@@ -168,7 +170,7 @@ def fingerprint(raw: str) -> str:
     s = re.sub(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", " ", s)  # phone numbers
     s = _STATE_RE.sub("", s)                       # trailing state
     s = re.sub(r"\b\d{5,}\b", " ", s)             # long digit runs
-    s = re.sub(r"\b\d{3,4}\b", " ", s)            # store numbers (0013, 1667)
+    s = re.sub(r"\b[A-Z]?\d{3,4}\b", " ", s)      # store numbers (0013, 1667) incl. letter-prefixed (F6011)
     s = _CITY_RE.sub(" ", s)                       # known city tails
     s = re.sub(r"\b\d{3}-?\s*$", "", s)           # trailing "194-" "130-"
     s = re.sub(r"[*#]", " ", s)

@@ -1,6 +1,11 @@
 import path from "path";
 import { loadEnvConfig } from "@next/env";
-import { Pool, type QueryResult, type QueryResultRow } from "pg";
+import {
+  Pool,
+  type PoolClient,
+  type QueryResult,
+  type QueryResultRow,
+} from "pg";
 
 // Repo-root .env is shared with Python importers (see web/next.config.ts).
 loadEnvConfig(path.resolve(__dirname, "../.."));
@@ -29,4 +34,24 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   params?: unknown[],
 ): Promise<QueryResult<T>> {
   return getPool().query<T>(text, params);
+}
+
+// Run a set of writes in one transaction on a single pooled client. Used by the
+// edit/add routes where merchant re-pointing, the txn write, split rows, the
+// merchant default + correction log must all commit (or roll back) together.
+export async function withTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }

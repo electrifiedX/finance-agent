@@ -1,10 +1,14 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import SiteHeader from "@/app/components/SiteHeader";
 import DateRangeSelector from "@/app/components/DateRangeSelector";
 import CategoryPie from "@/app/components/CategoryPie";
+import EditTransactionModal, {
+  type ModalAccount,
+} from "@/app/components/EditTransactionModal";
+import MerchantSearchInput from "@/app/components/MerchantSearchInput";
 import {
   absMoney0,
   categoryLabel,
@@ -14,7 +18,7 @@ import {
   monthBounds,
   toIso,
 } from "@/lib/format";
-import { ALL_CATEGORIES } from "@/lib/taxonomy";
+import { ALL_CATEGORIES, SPENDING_CATEGORIES } from "@/lib/taxonomy";
 
 type Summary = { income: number; expenses: number; net: number };
 type CategoryRow = { category: string; spend: number };
@@ -28,7 +32,10 @@ type TxnRow = {
   account: string;
   category: string | null;
   txn_type: string;
+  is_spending: boolean;
 };
+
+const SPENDING_SET = new Set<string>(SPENDING_CATEGORIES);
 type ReviewRow = {
   id: number;
   occurred_at: string;
@@ -96,7 +103,29 @@ function TransactionsView() {
     router.replace(`/transactions?${params.toString()}`, { scroll: false });
   }
 
-  // Section A — review backlog. All-time, fetched once, independent of filters.
+  // Edit/split + add-expense modal. `add=1` (e.g. from the header button on any
+  // page) opens the manual-entry form; row clicks open the editor.
+  type ModalState = { mode: "add" } | { mode: "edit"; id: number } | null;
+  const [modal, setModal] = useState<ModalState>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  const addParam = searchParams.get("add");
+  useEffect(() => {
+    if (addParam) {
+      setModal({ mode: "add" });
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("add");
+      router.replace(
+        `/transactions${params.toString() ? `?${params.toString()}` : ""}`,
+        { scroll: false },
+      );
+    }
+    // Only react to the presence of the add flag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addParam]);
+
+  // Section A — review backlog. All-time, independent of filters.
   const [review, setReview] = useState<ReviewRow[] | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
 
@@ -107,39 +136,27 @@ function TransactionsView() {
     fetchJson<Account[]>("/api/accounts")
       .then(setAccounts)
       .catch(() => setAccounts([]));
-  }, []);
+  }, [refreshKey]);
 
-  // Sections C–E — scoped to the selected range + filters.
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [categories, setCategories] = useState<CategoryRow[]>([]);
-  const [vendors, setVendors] = useState<VendorRow[]>([]);
+  // Sections C–E. We load ALL transactions for the period ONCE (date only) and
+  // derive every widget — summary, pie, top categories, top vendors, the table —
+  // from the same client-filtered set. That guarantees the numbers can never
+  // drift between the table and the widgets. Our dataset is small (~1300/yr).
   const [txns, setTxns] = useState<TxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [showNonSpending, setShowNonSpending] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-
-    const qs = new URLSearchParams({ start, end });
-    if (category) qs.set("category", category);
-    if (account) qs.set("account", account);
     const periodQs = new URLSearchParams({ start, end }).toString();
-
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        const [s, c, v, t] = await Promise.all([
-          fetchJson<Summary>(`/api/summary?${periodQs}`),
-          fetchJson<CategoryRow[]>(`/api/categories?${periodQs}`),
-          fetchJson<VendorRow[]>(`/api/vendors?${periodQs}`),
-          fetchJson<TxnRow[]>(`/api/transactions?${qs.toString()}`),
-        ]);
+        const t = await fetchJson<TxnRow[]>(`/api/transactions?${periodQs}`);
         if (cancelled) return;
-        setSummary(s);
-        setCategories(c);
-        setVendors(v);
         setTxns(t);
       } catch (err) {
         if (!cancelled) {
@@ -149,21 +166,106 @@ function TransactionsView() {
         if (!cancelled) setLoading(false);
       }
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [start, end, category, account]);
+  }, [start, end, refreshKey]);
 
-  const filteredTxns = useMemo(() => {
+  // Resolve the account filter (stored as id) to a name for client-side matching.
+  const accountName = useMemo(() => {
+    if (!account) return null;
+    if (/^\d+$/.test(account)) {
+      return accounts.find((a) => String(a.id) === account)?.name ?? null;
+    }
+    return account;
+  }, [account, accounts]);
+
+  // The single filtered set every widget + the table share: date (already from
+  // the API) + category + account + merchant search.
+  const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return txns;
-    return txns.filter(
-      (t) =>
-        t.merchant.toLowerCase().includes(q) ||
-        t.merchant_raw.toLowerCase().includes(q),
-    );
-  }, [txns, search]);
+    return txns.filter((t) => {
+      if (category && t.category !== category) return false;
+      if (accountName && t.account !== accountName) return false;
+      if (
+        q &&
+        !t.merchant.toLowerCase().includes(q) &&
+        !t.merchant_raw.toLowerCase().includes(q)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [txns, category, accountName, search]);
+
+  // Spend totals / pie / vendor + category lists count ONLY is_spending=true.
+  const spending = useMemo(
+    () => filtered.filter((t) => t.is_spending),
+    [filtered],
+  );
+
+  const summary: Summary = useMemo(() => {
+    let income = 0;
+    let expenses = 0;
+    for (const t of filtered) {
+      if (t.category === "income" || t.category === "misc_income") {
+        income += t.amount;
+      }
+      if (t.is_spending) expenses += -t.amount;
+    }
+    return { income, expenses, net: income - expenses };
+  }, [filtered]);
+
+  const categoryAgg: CategoryRow[] = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of spending) {
+      const key = t.category ?? "uncategorized";
+      m.set(key, (m.get(key) ?? 0) + -t.amount);
+    }
+    return [...m.entries()]
+      .map(([cat, spend]) => ({ category: cat, spend }))
+      .sort((a, b) => b.spend - a.spend);
+  }, [spending]);
+
+  const vendorAgg: VendorRow[] = useMemo(() => {
+    const m = new Map<string, { spend: number; txns: number }>();
+    for (const t of spending) {
+      const cur = m.get(t.merchant) ?? { spend: 0, txns: 0 };
+      cur.spend += -t.amount;
+      cur.txns += 1;
+      m.set(t.merchant, cur);
+    }
+    return [...m.entries()]
+      .map(([vendor, v]) => ({ vendor, spend: v.spend, txns: v.txns }))
+      .sort((a, b) => b.spend - a.spend);
+  }, [spending]);
+
+  // Pie drills down: by category when unfiltered, by vendor within a category.
+  const pieItems = useMemo(() => {
+    if (category) {
+      return vendorAgg.map((v) => ({ name: v.vendor, value: v.spend }));
+    }
+    return categoryAgg.map((c) => ({
+      name: categoryLabel(c.category),
+      value: c.spend,
+    }));
+  }, [category, vendorAgg, categoryAgg]);
+
+  // When narrowing by a (spending) category or a vendor, transfers/refunds just
+  // clutter the table — default to spending rows, with a toggle to reveal them.
+  const restrictToSpending =
+    (category !== "" && SPENDING_SET.has(category)) || search.trim() !== "";
+  const hiddenNonSpending = useMemo(
+    () =>
+      restrictToSpending ? filtered.filter((t) => !t.is_spending).length : 0,
+    [restrictToSpending, filtered],
+  );
+  const tableRows = useMemo(() => {
+    if (restrictToSpending && !showNonSpending) {
+      return filtered.filter((t) => t.is_spending);
+    }
+    return filtered;
+  }, [filtered, restrictToSpending, showNonSpending]);
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
@@ -176,7 +278,10 @@ function TransactionsView() {
         </p>
       </div>
 
-      <ToReviewSection review={review} />
+      <ToReviewSection
+        review={review}
+        onOpen={(id) => setModal({ mode: "edit", id })}
+      />
 
       <FilterBar
         start={start}
@@ -200,20 +305,50 @@ function TransactionsView() {
         <PeriodFallback />
       ) : (
         <>
-          <PeriodSummary summary={summary} categories={categories} />
-          <TopLists
-            categories={categories}
-            vendors={vendors}
-            totalSpend={summary?.expenses ?? 0}
+          <PeriodSummary
+            summary={summary}
+            category={category}
+            pieItems={pieItems}
           />
-          <TransactionList rows={filteredTxns} total={txns.length} />
+          <TopLists
+            categories={categoryAgg}
+            vendors={vendorAgg}
+            totalSpend={summary.expenses}
+          />
+          <TransactionList
+            rows={tableRows}
+            total={filtered.length}
+            hiddenNonSpending={
+              restrictToSpending && !showNonSpending ? hiddenNonSpending : 0
+            }
+            showNonSpending={showNonSpending}
+            canToggleNonSpending={restrictToSpending && hiddenNonSpending > 0}
+            onToggleNonSpending={() => setShowNonSpending((v) => !v)}
+            onOpen={(id) => setModal({ mode: "edit", id })}
+          />
         </>
+      )}
+
+      {modal && (
+        <EditTransactionModal
+          mode={modal.mode}
+          transactionId={modal.mode === "edit" ? modal.id : undefined}
+          accounts={accounts as ModalAccount[]}
+          onClose={() => setModal(null)}
+          onSaved={refresh}
+        />
       )}
     </main>
   );
 }
 
-function ToReviewSection({ review }: { review: ReviewRow[] | null }) {
+function ToReviewSection({
+  review,
+  onOpen,
+}: {
+  review: ReviewRow[] | null;
+  onOpen: (id: number) => void;
+}) {
   if (review === null) {
     return (
       <section className="mb-6 h-24 animate-pulse rounded-2xl border border-line bg-surface" />
@@ -254,19 +389,26 @@ function ToReviewSection({ review }: { review: ReviewRow[] | null }) {
         {review.map((row) => (
           <li
             key={row.id}
+            onClick={() => onOpen(row.id)}
             className="flex cursor-pointer items-center gap-4 px-5 py-3 transition-colors hover:bg-surface-2"
-            title="Resolve in the editor (coming next)"
+            title="Resolve in the editor"
           >
             <span className="w-14 shrink-0 text-xs text-muted">
               {dayShort(row.occurred_at)}
             </span>
             <span className="min-w-0 flex-1">
+              {/* Raw string is prominent here — the clean name is often generic
+                  ("Check Paid"), so the bank string is the real categorizing clue. */}
               <span className="block truncate font-medium text-ink">
-                {row.display_name || row.merchant_raw}
-              </span>
-              <span className="block truncate text-xs text-muted">
                 {row.merchant_raw}
               </span>
+              {row.display_name &&
+                row.display_name.toLowerCase() !==
+                  row.merchant_raw.toLowerCase() && (
+                  <span className="block truncate text-xs text-muted">
+                    {row.display_name}
+                  </span>
+                )}
             </span>
             <span className="rounded-md bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
               {reviewReason(row)}
@@ -345,12 +487,10 @@ function FilterBar({
           ))}
         </select>
 
-        <input
-          type="search"
+        <MerchantSearchInput
           value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Search merchant…"
-          className="ml-auto w-full max-w-56 rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-muted hover:border-line-strong focus:border-accent"
+          onChange={onSearch}
+          className="ml-auto w-full max-w-56"
         />
       </div>
     </section>
@@ -359,60 +499,83 @@ function FilterBar({
 
 function PeriodSummary({
   summary,
-  categories,
+  category,
+  pieItems,
 }: {
-  summary: Summary | null;
-  categories: CategoryRow[];
+  summary: Summary;
+  category: string;
+  pieItems: { name: string; value: number }[];
 }) {
-  if (!summary) return null;
   const positive = summary.net >= 0;
+  const filteredToCategory = category !== "";
+
+  // Headline differs by mode: a single category shows its spend; otherwise the
+  // period's income / expenses / net.
+  const left = filteredToCategory ? (
+    <div className="flex flex-col justify-center gap-2">
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+        {categoryLabel(category)}
+      </p>
+      <p className="money text-4xl font-semibold text-ink">
+        {money0(summary.expenses)}
+      </p>
+      <p className="text-sm text-muted">spent this period</p>
+    </div>
+  ) : (
+    <div className="flex flex-col justify-center gap-5">
+      <div className="grid grid-cols-2 gap-4">
+        <Figure label="Income">
+          <span className="money text-2xl font-medium text-ink">
+            {money0(summary.income)}
+          </span>
+        </Figure>
+        <Figure label="Expenses">
+          <span className="money text-2xl font-medium text-ink">
+            {money0(summary.expenses)}
+          </span>
+        </Figure>
+      </div>
+      <div className="rounded-xl border border-line bg-surface-2 px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+          Net
+        </p>
+        <p
+          className="money mt-1 text-3xl font-semibold"
+          style={{ color: positive ? "var(--color-pos)" : "var(--color-neg)" }}
+        >
+          {positive ? "+" : "−"}
+          {absMoney0(summary.net)}
+        </p>
+        <p
+          className="mt-0.5 text-sm font-medium"
+          style={{ color: positive ? "var(--color-pos)" : "var(--color-neg)" }}
+        >
+          {positive ? "Saved" : "Overspent"} {absMoney0(summary.net)} this
+          period
+        </p>
+      </div>
+    </div>
+  );
 
   return (
     <section className="mt-6 grid grid-cols-1 gap-6 rounded-2xl border border-line bg-surface p-5 sm:p-6 lg:grid-cols-2">
-      <div className="flex flex-col justify-center gap-5">
-        <div className="grid grid-cols-2 gap-4">
-          <Figure label="Income">
-            <span className="money text-2xl font-medium text-ink">
-              {money0(summary.income)}
-            </span>
-          </Figure>
-          <Figure label="Expenses">
-            <span className="money text-2xl font-medium text-ink">
-              {money0(summary.expenses)}
-            </span>
-          </Figure>
-        </div>
-        <div className="rounded-xl border border-line bg-surface-2 px-4 py-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Net
-          </p>
-          <p
-            className="money mt-1 text-3xl font-semibold"
-            style={{
-              color: positive ? "var(--color-pos)" : "var(--color-neg)",
-            }}
-          >
-            {positive ? "+" : "−"}
-            {absMoney0(summary.net)}
-          </p>
-          <p
-            className="mt-0.5 text-sm font-medium"
-            style={{
-              color: positive ? "var(--color-pos)" : "var(--color-neg)",
-            }}
-          >
-            {positive ? "Saved" : "Overspent"} {absMoney0(summary.net)} this
-            period
-          </p>
-        </div>
-      </div>
+      {left}
 
       <div className="flex items-center">
         <div className="w-full">
           <h2 className="mb-3 text-base font-semibold text-ink">
-            Spending by category
+            {filteredToCategory
+              ? `${categoryLabel(category)} by vendor`
+              : "Spending by category"}
           </h2>
-          <CategoryPie categories={categories} />
+          <CategoryPie
+            items={pieItems}
+            emptyLabel={
+              filteredToCategory
+                ? "No spending for this category."
+                : "No spending in this period."
+            }
+          />
         </div>
       </div>
     </section>
@@ -513,22 +676,95 @@ function TopLists({
   );
 }
 
+type SortKey = "date" | "amount";
+type SortDir = "asc" | "desc";
+
 function TransactionList({
   rows,
   total,
+  hiddenNonSpending,
+  showNonSpending,
+  canToggleNonSpending,
+  onToggleNonSpending,
+  onOpen,
 }: {
   rows: TxnRow[];
   total: number;
+  hiddenNonSpending: number;
+  showNonSpending: boolean;
+  canToggleNonSpending: boolean;
+  onToggleNonSpending: () => void;
+  onOpen: (id: number) => void;
 }) {
+  // Client-side sort over the already-loaded period rows — no extra API calls.
+  // Default matches the API's order: newest first.
+  const [sortKey, setSortKey] = useState<SortKey>("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Sensible first click: newest first for date, biggest first for amount.
+      setSortDir("desc");
+    }
+  }
+
+  const sortedRows = useMemo(() => {
+    const sign = sortDir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      let cmp: number;
+      if (sortKey === "amount") {
+        // Rank by spend magnitude so a -$2,000 expense outranks a -$10 one,
+        // regardless of sign.
+        cmp = Math.abs(a.amount) - Math.abs(b.amount);
+      } else {
+        cmp = a.occurred_at < b.occurred_at ? -1 : a.occurred_at > b.occurred_at ? 1 : 0;
+      }
+      // Stable tiebreaker (and matches the API's secondary id ordering).
+      if (cmp === 0) cmp = a.id - b.id;
+      return cmp * sign;
+    });
+  }, [rows, sortKey, sortDir]);
+
+  // Net of the rows currently shown (after search/filter) — e.g. total spent
+  // with a vendor over the period when the search box is narrowing the list.
+  const totalAmount = useMemo(
+    () => rows.reduce((sum, t) => sum + t.amount, 0),
+    [rows],
+  );
+
+  const arrow = (key: SortKey) =>
+    sortKey === key ? (sortDir === "asc" ? "↑" : "↓") : "";
+
+  const sortableTh =
+    "cursor-pointer select-none font-semibold transition-colors hover:text-ink";
+
   return (
     <section className="mt-6 overflow-hidden rounded-2xl border border-line bg-surface">
-      <div className="flex items-center justify-between border-b border-line px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
         <h2 className="text-base font-semibold text-ink">Transactions</h2>
-        <span className="text-xs text-muted">
-          {rows.length === total
-            ? `${total} in period`
-            : `${rows.length} of ${total}`}
-        </span>
+        <div className="flex items-center gap-3">
+          {canToggleNonSpending && (
+            <button
+              type="button"
+              onClick={onToggleNonSpending}
+              className="rounded-md border border-line px-2.5 py-1 text-xs font-medium text-muted transition-colors hover:border-line-strong hover:text-ink"
+            >
+              {showNonSpending
+                ? "Hide transfers & refunds"
+                : `Show transfers & refunds${
+                    hiddenNonSpending ? ` (${hiddenNonSpending})` : ""
+                  }`}
+            </button>
+          )}
+          <span className="text-xs text-muted">
+            {rows.length === total
+              ? `${total} in period`
+              : `${rows.length} of ${total}`}
+          </span>
+        </div>
       </div>
 
       {rows.length === 0 ? (
@@ -538,19 +774,44 @@ function TransactionList({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-xs uppercase tracking-wider text-muted">
-                <th className="px-5 py-2 font-semibold">Date</th>
+                <th
+                  className={`px-5 py-2 ${sortableTh} ${sortKey === "date" ? "text-ink" : ""}`}
+                  onClick={() => toggleSort("date")}
+                  aria-sort={
+                    sortKey === "date"
+                      ? sortDir === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                >
+                  Date <span className="text-accent">{arrow("date")}</span>
+                </th>
                 <th className="px-3 py-2 font-semibold">Merchant</th>
                 <th className="px-3 py-2 font-semibold">Account</th>
                 <th className="px-3 py-2 font-semibold">Category</th>
                 <th className="px-3 py-2 font-semibold">Type</th>
-                <th className="px-5 py-2 text-right font-semibold">Amount</th>
+                <th
+                  className={`px-5 py-2 text-right ${sortableTh} ${sortKey === "amount" ? "text-ink" : ""}`}
+                  onClick={() => toggleSort("amount")}
+                  aria-sort={
+                    sortKey === "amount"
+                      ? sortDir === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                >
+                  <span className="text-accent">{arrow("amount")}</span> Amount
+                </th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => (
+              {sortedRows.map((t) => (
                 <tr
                   key={t.id}
-                  title={`${t.merchant_raw} — open editor (coming next)`}
+                  onClick={() => onOpen(t.id)}
+                  title={`${t.merchant_raw} — open editor`}
                   className="cursor-pointer border-b border-line/60 transition-colors last:border-0 hover:bg-surface-2"
                 >
                   <td className="whitespace-nowrap px-5 py-2.5 text-muted">
@@ -590,6 +851,27 @@ function TransactionList({
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="border-t border-line-strong bg-surface-2/40">
+                <td
+                  className="px-5 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted"
+                  colSpan={5}
+                >
+                  Total · {rows.length} shown
+                </td>
+                <td
+                  className="money whitespace-nowrap px-5 py-2.5 text-right font-semibold"
+                  style={{
+                    color:
+                      totalAmount >= 0
+                        ? "var(--color-pos)"
+                        : "var(--color-ink)",
+                  }}
+                >
+                  {money2(totalAmount)}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}

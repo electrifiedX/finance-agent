@@ -38,6 +38,13 @@ export default function SiteHeader({ active }: { active: Tab }) {
               </Link>
             ),
           )}
+          {/* Persistent manual-add entry point; opens the modal on Transactions. */}
+          <Link
+            href="/transactions?add=1"
+            className="ml-2 rounded-md bg-accent px-3 py-1.5 font-semibold text-[#1a130a] transition-opacity hover:opacity-90"
+          >
+            + Add expense
+          </Link>
         </nav>
       </div>
     </header>
