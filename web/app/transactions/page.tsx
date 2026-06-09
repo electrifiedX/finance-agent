@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import SiteHeader from "@/app/components/SiteHeader";
 import DateRangeSelector from "@/app/components/DateRangeSelector";
 import CategoryPie from "@/app/components/CategoryPie";
@@ -83,7 +83,6 @@ export default function TransactionsPage() {
 }
 
 function TransactionsView() {
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   const defaults = useMemo(() => monthBounds(toIso(new Date())), []);
@@ -100,7 +99,14 @@ function TransactionsView() {
       if (value === null || value === "") params.delete(key);
       else params.set(key, value);
     }
-    router.replace(`/transactions?${params.toString()}`, { scroll: false });
+    // Use the native history API rather than router.replace(). /transactions is
+    // statically prerendered in production, and there Next's client router
+    // dedupes query-only router.replace() calls to a no-op once the URL already
+    // has params — which froze the entire date bar on the first-loaded month.
+    // window.history.replaceState is integrated with the App Router (Next 14.1+),
+    // so it updates useSearchParams() (and thus the period) reliably in BOTH dev
+    // and production.
+    window.history.replaceState(null, "", `/transactions?${params.toString()}`);
   }
 
   // Edit/split + add-expense modal. `add=1` (e.g. from the header button on any
@@ -116,9 +122,10 @@ function TransactionsView() {
       setModal({ mode: "add" });
       const params = new URLSearchParams(searchParams.toString());
       params.delete("add");
-      router.replace(
+      window.history.replaceState(
+        null,
+        "",
         `/transactions${params.toString() ? `?${params.toString()}` : ""}`,
-        { scroll: false },
       );
     }
     // Only react to the presence of the add flag.

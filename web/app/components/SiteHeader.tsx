@@ -2,10 +2,15 @@ import Link from "next/link";
 
 type Tab = "overview" | "transactions" | "subscriptions";
 
+// NOTE: /subscriptions (SETUP Prompt 6) isn't built yet. It must NOT appear here
+// until web/app/subscriptions/page.tsx exists: Next.js prefetches every nav
+// <Link>, and a prefetch of a missing route returns a 404 that isn't a valid RSC
+// payload. Behind the Cloudflare tunnel that poisons the client router and makes
+// the next router.replace() (the month/year/custom-range buttons) silently fail.
+// Add the entry back in the same step you add the page.
 const LINKS: { href: string; label: string; key: Tab }[] = [
   { href: "/", label: "Overview", key: "overview" },
   { href: "/transactions", label: "Transactions", key: "transactions" },
-  { href: "/subscriptions", label: "Subscriptions", key: "subscriptions" },
 ];
 
 export default function SiteHeader({ active }: { active: Tab }) {

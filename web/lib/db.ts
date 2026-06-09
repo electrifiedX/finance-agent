@@ -1,5 +1,6 @@
+import fs from "fs";
 import path from "path";
-import { loadEnvConfig } from "@next/env";
+import dotenv from "dotenv";
 import {
   Pool,
   type PoolClient,
@@ -7,13 +8,29 @@ import {
   type QueryResultRow,
 } from "pg";
 
-// Repo-root .env is shared with Python importers (see web/next.config.ts).
-loadEnvConfig(path.resolve(__dirname, "../.."));
+// The repo-root .env is shared with the Python importers. Next.js's built-in
+// env loading (@next/env's loadEnvConfig) only picks up that repo-root file
+// reliably under `next dev`; under `next start` (production) it is frequently
+// missed, leaving DATABASE_URL undefined. We also can't trust __dirname here,
+// since it points inside the bundled .next output rather than web/lib.
+//
+// Both `next dev` and `next start` are launched from the web/ directory, so the
+// repo root is one level up from process.cwd(). Resolve that absolute path and
+// load the .env explicitly so it works identically in dev and production.
+const repoRootEnvPath = path.resolve(process.cwd(), "..", ".env");
+dotenv.config({ path: repoRootEnvPath });
 
 function getDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    throw new Error("DATABASE_URL is not set");
+    const existsNote = fs.existsSync(repoRootEnvPath)
+      ? "the file exists but has no DATABASE_URL entry"
+      : "the file does not exist";
+    throw new Error(
+      `DATABASE_URL not found — checked ${repoRootEnvPath} (${existsNote}). ` +
+        "Run the app from the web/ directory so the repo-root .env can be located, " +
+        "or set DATABASE_URL in the environment.",
+    );
   }
   return url;
 }

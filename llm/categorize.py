@@ -60,10 +60,26 @@ def _fewshot_examples(conn, limit: int = 20) -> list[tuple[str, str]]:
         return cur.fetchall()
 
 
-def categorize_merchant(conn, display_name: str, merchant_raw: str, amount: float) -> tuple[str, str, float]:
-    """Ask the LLM for {display_name, category, confidence} for a new merchant, few-shot from history."""
+def _existing_vendors(conn, exclude_id: int) -> list[tuple[str, str]]:
+    """All known vendor names + their category, so the LLM can REUSE an existing name
+    instead of inventing a near-duplicate (this household shops at the same places repeatedly)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT display_name, COALESCE(default_category, '') FROM merchants "
+            "WHERE id <> %s AND display_name IS NOT NULL ORDER BY display_name",
+            (exclude_id,),
+        )
+        return cur.fetchall()
+
+
+def categorize_merchant(conn, display_name: str, merchant_raw: str, amount: float,
+                        merchant_id: int = -1) -> tuple[str, str, float]:
+    """Ask the LLM for {display_name, category, confidence} for a new merchant, few-shot from history.
+    Prefers matching an EXISTING vendor name over inventing a new one."""
     examples = _fewshot_examples(conn)
     ex_text = "\n".join(f"  {n} -> {c}" for n, c in examples) or "  (none yet)"
+    vendors = _existing_vendors(conn, merchant_id)
+    vendor_text = "\n".join(f"  {n}" for n, _ in vendors) or "  (none yet)"
     prompt = f"""You clean up and categorize a household's financial transactions.
 
 Valid categories:
@@ -71,6 +87,11 @@ Valid categories:
 
 How THIS household has categorized merchants before (match their taste):
 {ex_text}
+
+EXISTING vendors already in this household's records. This household shops at the same places
+repeatedly, so STRONGLY PREFER reusing one of these exact names if this transaction is the same
+business. Only invent a new name if it is clearly NOT any of these:
+{vendor_text}
 
 Notes:
 - coffee_snacks = informal treats (coffee, ice cream, a cookie); eating_out = actual meals.
@@ -80,9 +101,10 @@ Notes:
 - If genuinely unclear, use "needs_review".
 
 Two tasks for this transaction:
-1. display_name: the clean, recognizable BUSINESS name. Strip store numbers, city names, and
-   payment-processor junk, BUT KEEP numbers that are part of the real brand (e.g. "7-Eleven",
-   "5 Guys", "Dave & Buster's"). Use the well-known name of the business if you recognize it.
+1. display_name: if it matches an EXISTING vendor above, return that EXACT existing name. Otherwise
+   the clean, recognizable BUSINESS name — strip store numbers, city names, and payment-processor
+   junk, BUT KEEP numbers that are part of the real brand (e.g. "7-Eleven", "5 Guys"). Use the
+   well-known name of the business if you recognize it.
 2. category: exactly one from the list above.
 
 Transaction: raw="{merchant_raw}", amount={amount}
@@ -161,15 +183,32 @@ def run(dsn: str):
             category, confidence = default_cat, 1.0
             n_cache += 1
         else:
-            new_name, category, confidence = categorize_merchant(conn, display_name, merchant_raw, float(amount))
+            new_name, category, confidence = categorize_merchant(
+                conn, display_name, merchant_raw, float(amount), merchant_id)
             n_llm += 1
-            # Seed the merchant default + clean display name (UNLOCKED — only a human lock makes it permanent).
             with conn.cursor() as cur:
+                # If the LLM matched an EXISTING vendor name (other than this merchant), re-point
+                # the transaction to that merchant and inherit its category — avoids duplicates.
                 cur.execute(
-                    "UPDATE merchants SET default_category = COALESCE(default_category, %s), "
-                    "display_name = %s, updated_at = now() WHERE id = %s AND locked = false",
-                    (category, new_name, merchant_id),
+                    "SELECT id, default_category FROM merchants "
+                    "WHERE lower(display_name) = lower(%s) AND id <> %s ORDER BY locked DESC, id LIMIT 1",
+                    (new_name, merchant_id),
                 )
+                match = cur.fetchone()
+                if match:
+                    existing_id, existing_cat = match
+                    cur.execute("UPDATE transactions SET merchant_id = %s WHERE id = %s",
+                                (existing_id, txn_id))
+                    merchant_id = existing_id
+                    if existing_cat:
+                        category = existing_cat
+                else:
+                    # New vendor: seed default + clean name (UNLOCKED — only a human lock is permanent).
+                    cur.execute(
+                        "UPDATE merchants SET default_category = COALESCE(default_category, %s), "
+                        "display_name = %s, updated_at = now() WHERE id = %s AND locked = false",
+                        (category, new_name, merchant_id),
+                    )
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE transactions SET category = %s, confidence = %s WHERE id = %s",
