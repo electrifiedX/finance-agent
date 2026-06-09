@@ -217,6 +217,31 @@ When you want to reach the dashboard from your phone:
   server touches it. This is the whole reason the single-app design avoids the multi-service
   tunnel headaches from before.
 
+### ROADMAP: Loan tracking module (next-up feature)
+Treat loans as first-class entities, not just categories — so the principal/interest split is
+computed automatically instead of approximating each payment as all-transfer or all-expense.
+Currently (stopgap) car-loan payments are categorized as `automotive` and mortgage/HELOC/HVAC as
+`housing` — full payment counted as spending, principal included. That's a cash-flow view; this
+module replaces it with accurate accounting.
+
+Design sketch:
+- New `loans` table: id, name, linked_merchant_id (or match rule), original_principal,
+  current_balance, interest_rate (APR), term_months, start_date, monthly_payment, payment_category
+  (automotive/housing/etc. for the interest portion).
+- A "Loans" tab/page to enter and edit each loan's terms (Cybertruck, Model Y, mortgage, HELOC,
+  HVAC/GreenSky). Terms entry is manual, one-time per loan.
+- When a payment for a linked loan is recorded, the app uses amortization math (balance × monthly
+  rate = interest; remainder = principal) to split it: interest portion -> a spending category
+  (the loan's payment_category or a dedicated `interest`), principal portion -> reduces
+  current_balance and is NOT counted as consumption spending.
+- Payoff insight: with rate + balance + payment, show projected payoff date and interest-saved
+  for extra payments. This is the wealth-building lens (watching liabilities fall), which matters
+  more than spend-tracking for the multi-millionaire goal.
+- Generalizes to all 5 loans. Net-worth view (assets - loan balances) becomes possible later.
+Build this AFTER the app is in daily use (review queue cleared, subscriptions live, ingestion
+working) — it's a real module (table + terms UI + amortization + wiring into category/spend views),
+comparable in scope to one dashboard prompt. Don't let it jump the line ahead of using the app.
+
 ---
 
 ## How the pieces fit (so you can direct Composer confidently)
