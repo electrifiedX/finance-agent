@@ -121,6 +121,7 @@ def parse_ally(body: str, subject: str) -> Optional[NormalizedTxn]:
     last4 = re.search(r"ending in\s*(\d{4})", body)
     amt = re.search(r"Amount\s*[:\t ]*\$?([\d,]+\.\d{2})", body)
     ttype = re.search(r"Transaction\s*[:\t ]*(.+)", body)
+    acct_type = re.search(r"Account type\s*[:\t ]*(.+)", body)
     dt = re.search(r"Date\s*[:\t ]*(\d{1,2}/\d{1,2}/\d{4})", body)
     is_debit = "debit" in (subject or "").lower() or "withdrawal" in (ttype.group(1).lower() if ttype else "")
     if not amt:
@@ -129,7 +130,10 @@ def parse_ally(body: str, subject: str) -> Optional[NormalizedTxn]:
     occurred = _parse_date(dt.group(1)) if dt else datetime.now().date()
     l4 = last4.group(1) if last4 else None
     type_label = ttype.group(1).strip() if ttype else "ALLY TRANSACTION"
-    # Debit = money out (negative). Ally alerts here are debit-threshold alerts.
+    acct_label = acct_type.group(1).strip() if acct_type else ""
+    # Breadcrumb in notes so the merchant-less review item has identifying context.
+    note = f"Ally ending {l4}" + (f" · {acct_label}" if acct_label else "") + f" · {type_label}"
+    # Debit = money out (negative).
     signed = -abs(amount) if is_debit else abs(amount)
     return NormalizedTxn(
         account_name="",
@@ -140,7 +144,8 @@ def parse_ally(body: str, subject: str) -> Optional[NormalizedTxn]:
         category="needs_review",           # ALWAYS needs_review — email lacks merchant
         is_spending=is_debit,
         source="email_ally",
-        raw_payload={"last4": l4, "subject": subject, "ally_type": type_label},
+        notes=note,
+        raw_payload={"last4": l4, "subject": subject, "ally_type": type_label, "acct_type": acct_label},
         dedupe_key=make_dedupe_key("email_ally", last4=l4, date=str(occurred),
                                    amount=f"{amount:.2f}", type=type_label[:24]),
     )

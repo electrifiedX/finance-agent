@@ -39,6 +39,7 @@ class NormalizedTxn:
     source: str = "csv"
     raw_payload: dict = field(default_factory=dict)
     dedupe_key: Optional[str] = None     # set by importer via make_dedupe_key()
+    notes: Optional[str] = None          # free-text breadcrumb (e.g. Ally last4/type for review)
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +282,11 @@ def insert_txn(conn, txn: NormalizedTxn) -> bool:
             """
             INSERT INTO transactions
               (account_id, occurred_at, posted_at, amount, merchant_id, merchant_raw,
-               category, txn_type, is_spending, source, external_id, dedupe_key, raw_payload)
+               category, txn_type, is_spending, source, external_id, dedupe_key, raw_payload, notes)
             VALUES
               (%(account_id)s, %(occurred_at)s, %(posted_at)s, %(amount)s, %(merchant_id)s,
                %(merchant_raw)s, %(category)s, %(txn_type)s, %(is_spending)s, %(source)s,
-               %(external_id)s, %(dedupe_key)s, %(raw_payload)s)
+               %(external_id)s, %(dedupe_key)s, %(raw_payload)s, %(notes)s)
             ON CONFLICT (dedupe_key) DO NOTHING
             RETURNING id
             """,
@@ -303,6 +304,7 @@ def insert_txn(conn, txn: NormalizedTxn) -> bool:
                 "external_id": txn.external_id,
                 "dedupe_key": txn.dedupe_key,
                 "raw_payload": Jsonb(txn.raw_payload),
+                "notes": txn.notes,
             },
         )
         return cur.fetchone() is not None
