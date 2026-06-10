@@ -12,3 +12,4 @@ drop/*.CSV
 drop/*.pdf
 *.log
 .DS_Store
+secrets/
