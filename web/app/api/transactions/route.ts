@@ -19,6 +19,7 @@ export const dynamic = "force-dynamic";
 // Rows show each transaction's OWN category/type — split lines are an aggregation
 // concern handled by queries 1 and 5, not this flat list.
 
+type SplitJson = { category: string; percent: number };
 type Row = {
   id: number;
   occurred_at: string;
@@ -29,6 +30,7 @@ type Row = {
   category: string | null;
   txn_type: string;
   is_spending: boolean;
+  splits: SplitJson[];
 };
 
 export async function GET(request: Request) {
@@ -69,7 +71,14 @@ export async function GET(request: Request) {
              a.name AS account,
              t.category,
              t.txn_type,
-             t.is_spending
+             t.is_spending,
+             COALESCE((
+               SELECT json_agg(
+                        json_build_object('category', s.category, 'percent', s.percent)
+                        ORDER BY s.id)
+               FROM transaction_splits s
+               WHERE s.transaction_id = t.id
+             ), '[]'::json) AS splits
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
       LEFT JOIN merchants m ON m.id = t.merchant_id
@@ -89,6 +98,11 @@ export async function GET(request: Request) {
         category: r.category,
         txn_type: r.txn_type,
         is_spending: r.is_spending,
+        splits: (r.splits ?? []).map((s) => ({
+          category: s.category,
+          // pg returns NUMERIC inside json as a number already, but coerce to be safe.
+          percent: Number(s.percent),
+        })),
       })),
     );
   } catch (err) {

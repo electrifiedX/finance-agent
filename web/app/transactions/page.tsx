@@ -23,6 +23,7 @@ import { ALL_CATEGORIES, SPENDING_CATEGORIES } from "@/lib/taxonomy";
 type Summary = { income: number; expenses: number; net: number };
 type CategoryRow = { category: string; spend: number };
 type VendorRow = { vendor: string; spend: number; txns: number };
+type Split = { category: string; percent: number };
 type TxnRow = {
   id: number;
   occurred_at: string;
@@ -33,9 +34,52 @@ type TxnRow = {
   category: string | null;
   txn_type: string;
   is_spending: boolean;
+  splits: Split[];
 };
 
 const SPENDING_SET = new Set<string>(SPENDING_CATEGORIES);
+
+// Round to cents, half away from zero (matches Postgres NUMERIC ROUND, so client
+// aggregation lines up with db/queries.sql).
+function roundCents(x: number): number {
+  return (Math.sign(x) * Math.round(Math.abs(x) * 100)) / 100;
+}
+
+// Splits-aware expansion (db/queries.sql query 1): a txn WITHOUT splits yields one
+// line under its own category; a txn WITH splits yields one line per split at
+// amount × percent/100 and NONE under its parent category.
+type SpendLine = {
+  txnId: number;
+  category: string;
+  amount: number;
+  is_spending: boolean;
+  merchant: string;
+};
+function toLines(txns: TxnRow[]): SpendLine[] {
+  const lines: SpendLine[] = [];
+  for (const t of txns) {
+    if (t.splits.length === 0) {
+      lines.push({
+        txnId: t.id,
+        category: t.category ?? "uncategorized",
+        amount: t.amount,
+        is_spending: t.is_spending,
+        merchant: t.merchant,
+      });
+    } else {
+      for (const s of t.splits) {
+        lines.push({
+          txnId: t.id,
+          category: s.category,
+          amount: roundCents((t.amount * s.percent) / 100),
+          is_spending: t.is_spending,
+          merchant: t.merchant,
+        });
+      }
+    }
+  }
+  return lines;
+}
 type ReviewRow = {
   id: number;
   occurred_at: string;
@@ -187,12 +231,11 @@ function TransactionsView() {
     return account;
   }, [account, accounts]);
 
-  // The single filtered set every widget + the table share: date (already from
-  // the API) + category + account + merchant search.
-  const filtered = useMemo(() => {
+  // Transaction-level filters (everything EXCEPT category). The category filter is
+  // applied splits-aware below, since a split txn belongs to several categories.
+  const baseFiltered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return txns.filter((t) => {
-      if (category && t.category !== category) return false;
       if (accountName && t.account !== accountName) return false;
       if (
         q &&
@@ -203,49 +246,66 @@ function TransactionsView() {
       }
       return true;
     });
-  }, [txns, category, accountName, search]);
+  }, [txns, accountName, search]);
 
-  // Spend totals / pie / vendor + category lists count ONLY is_spending=true.
-  const spending = useMemo(
-    () => filtered.filter((t) => t.is_spending),
-    [filtered],
+  // Splits-aware spend lines (db/queries.sql query 1): split txns contribute to
+  // each split category, never their parent category. Drives all per-category and
+  // per-vendor spend rollups so splits are reflected everywhere.
+  const baseLines = useMemo(() => toLines(baseFiltered), [baseFiltered]);
+  const activeLines = useMemo(
+    () => (category ? baseLines.filter((l) => l.category === category) : baseLines),
+    [baseLines, category],
   );
 
+  // Income/Expenses/Net headline: parent-level (splitting only reallocates a
+  // transaction's spend across categories — it never changes the period total).
   const summary: Summary = useMemo(() => {
     let income = 0;
     let expenses = 0;
-    for (const t of filtered) {
+    for (const t of baseFiltered) {
       if (t.category === "income" || t.category === "misc_income") {
         income += t.amount;
       }
       if (t.is_spending) expenses += -t.amount;
     }
     return { income, expenses, net: income - expenses };
-  }, [filtered]);
+  }, [baseFiltered]);
+
+  // Splits-aware spend for the selected category (the correct "this category"
+  // number even when a transaction is only partly in it).
+  const categorySpend = useMemo(
+    () =>
+      activeLines.reduce((s, l) => (l.is_spending ? s + -l.amount : s), 0),
+    [activeLines],
+  );
 
   const categoryAgg: CategoryRow[] = useMemo(() => {
     const m = new Map<string, number>();
-    for (const t of spending) {
-      const key = t.category ?? "uncategorized";
-      m.set(key, (m.get(key) ?? 0) + -t.amount);
+    for (const l of activeLines) {
+      if (!l.is_spending) continue;
+      m.set(l.category, (m.get(l.category) ?? 0) + -l.amount);
     }
     return [...m.entries()]
       .map(([cat, spend]) => ({ category: cat, spend }))
       .sort((a, b) => b.spend - a.spend);
-  }, [spending]);
+  }, [activeLines]);
 
+  // Vendors: splits-aware portions (a split txn's lines sum back to its parent
+  // total, so unfiltered totals are unchanged; within a category we see just that
+  // category's share per vendor). txn count is distinct transactions, not lines.
   const vendorAgg: VendorRow[] = useMemo(() => {
-    const m = new Map<string, { spend: number; txns: number }>();
-    for (const t of spending) {
-      const cur = m.get(t.merchant) ?? { spend: 0, txns: 0 };
-      cur.spend += -t.amount;
-      cur.txns += 1;
-      m.set(t.merchant, cur);
+    const m = new Map<string, { spend: number; ids: Set<number> }>();
+    for (const l of activeLines) {
+      if (!l.is_spending) continue;
+      const cur = m.get(l.merchant) ?? { spend: 0, ids: new Set<number>() };
+      cur.spend += -l.amount;
+      cur.ids.add(l.txnId);
+      m.set(l.merchant, cur);
     }
     return [...m.entries()]
-      .map(([vendor, v]) => ({ vendor, spend: v.spend, txns: v.txns }))
+      .map(([vendor, v]) => ({ vendor, spend: v.spend, txns: v.ids.size }))
       .sort((a, b) => b.spend - a.spend);
-  }, [spending]);
+  }, [activeLines]);
 
   // Pie drills down: by category when unfiltered, by vendor within a category.
   const pieItems = useMemo(() => {
@@ -257,6 +317,17 @@ function TransactionsView() {
       value: c.spend,
     }));
   }, [category, vendorAgg, categoryAgg]);
+
+  // Table rows: a transaction belongs to the selected category if its own category
+  // matches OR (when split) any of its split lines match.
+  const filtered = useMemo(() => {
+    if (!category) return baseFiltered;
+    return baseFiltered.filter((t) =>
+      t.splits.length === 0
+        ? t.category === category
+        : t.splits.some((s) => s.category === category),
+    );
+  }, [baseFiltered, category]);
 
   // When narrowing by a (spending) category or a vendor, transfers/refunds just
   // clutter the table — default to spending rows, with a toggle to reveal them.
@@ -315,12 +386,13 @@ function TransactionsView() {
           <PeriodSummary
             summary={summary}
             category={category}
+            categorySpend={categorySpend}
             pieItems={pieItems}
           />
           <TopLists
             categories={categoryAgg}
             vendors={vendorAgg}
-            totalSpend={summary.expenses}
+            totalSpend={category ? categorySpend : summary.expenses}
           />
           <TransactionList
             rows={tableRows}
@@ -507,24 +579,26 @@ function FilterBar({
 function PeriodSummary({
   summary,
   category,
+  categorySpend,
   pieItems,
 }: {
   summary: Summary;
   category: string;
+  categorySpend: number;
   pieItems: { name: string; value: number }[];
 }) {
   const positive = summary.net >= 0;
   const filteredToCategory = category !== "";
 
-  // Headline differs by mode: a single category shows its spend; otherwise the
-  // period's income / expenses / net.
+  // Headline differs by mode: a single category shows its (splits-aware) spend;
+  // otherwise the period's income / expenses / net.
   const left = filteredToCategory ? (
     <div className="flex flex-col justify-center gap-2">
       <p className="text-xs font-semibold uppercase tracking-wider text-muted">
         {categoryLabel(category)}
       </p>
       <p className="money text-4xl font-semibold text-ink">
-        {money0(summary.expenses)}
+        {money0(categorySpend)}
       </p>
       <p className="text-sm text-muted">spent this period</p>
     </div>
